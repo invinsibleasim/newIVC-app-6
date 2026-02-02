@@ -476,20 +476,46 @@ def cuspt_translate_inline(light_df: pd.DataFrame,
     }
 
 # =========================
+# IEC‑LIKE SURROGATE (overlay)
+# =========================
+def iec_like_translate(anchor_df: pd.DataFrame, G2: float, T2: float,
+                       alpha_I=0.0005, beta_V=-0.08, lnG_fac=0.7) -> pd.DataFrame:
+    """
+    Quick IEC‑like surrogate (not a formal IEC 60891 CP).
+    - Scales current with irradiance and α_I.
+    - Shifts voltage with β_V and a mild ln(G) factor.
+    """
+    V1 = anchor_df["V"].values
+    I1 = anchor_df["I"].values
+    G1 = float(anchor_df["G"].median())
+    T1 = float(anchor_df["T"].median())
+
+    I2 = I1*(G2/G1)*(1.0+alpha_I*(T2-25.0))/(1.0+alpha_I*(T1-25.0))
+    dV_T = beta_V*((T2-25.0)-(T1-25.0))
+    dV_G = lnG_fac*np.log(max(1e-6,G2)/max(1e-6,G1) + 1.0)
+    V2 = V1 + dV_T + dV_G
+    I2 = np.maximum(0.0, I2)
+    return pd.DataFrame({"V": V2, "I": I2})
+
+# =========================
 # PLOTTING & KPIs (common)
 # =========================
-def plot_results(anchor_df, tr_df, neu_df, title="Results"):
+def plot_results(anchor_df, tr_df, neu_df, title="Results", iec_df=None):
     fig, ax = plt.subplots(1, 2, figsize=(11, 4))
     # I‑V
     ax[0].plot(anchor_df["V"], anchor_df["I"], "k.", label="Measured (anchor)")
     ax[0].plot(tr_df["V"], tr_df["I"], "C0-", label="Translated (as‑is)")
     ax[0].plot(neu_df["V"], neu_df["I"], "C1--", label="Neutralized")
+    if iec_df is not None:
+        ax[0].plot(iec_df["V"], iec_df["I"], "C3:", label="IEC‑like (surrogate)")
     ax[0].set_xlabel("Voltage [V]"); ax[0].set_ylabel("Current [A]"); ax[0].grid(True)
     ax[0].legend(); ax[0].set_title("I‑V")
     # P‑V
     ax[1].plot(anchor_df["V"], anchor_df["V"] * anchor_df["I"], "k.", label="Measured")
     ax[1].plot(tr_df["V"], tr_df["V"] * tr_df["I"], "C0-", label="Translated")
     ax[1].plot(neu_df["V"], neu_df["V"] * neu_df["I"], "C1--", label="Neutralized")
+    if iec_df is not None:
+        ax[1].plot(iec_df["V"], iec_df["V"] * iec_df["I"], "C3:", label="IEC‑like")
     ax[1].set_xlabel("Voltage [V]"); ax[1].set_ylabel("Power [W]"); ax[1].grid(True)
     ax[1].legend(); ax[1].set_title("P‑V")
     fig.suptitle(title); fig.tight_layout()
@@ -549,6 +575,13 @@ with st.sidebar.expander("CUSP‑T (Morphology) parameters"):
     cuspt_a_max   = st.number_input("a_sh max", value=5e-3, format="%.6f", key="cuspt_amax")
     cuspt_m_min   = st.number_input("m_sh min", value=1.1, format="%.2f", key="cuspt_mmin")
     cuspt_m_max   = st.number_input("m_sh max", value=2.0, format="%.2f", key="cuspt_mmax")
+
+# NEW: IEC‑like overlay controls
+with st.sidebar.expander("Optional: IEC‑like surrogate overlay"):
+    show_iec = st.checkbox("Show IEC‑like overlay (surrogate)", value=False)
+    alpha_I_iec = st.number_input("IEC‑like α_I [1/°C]", value=0.0005, format="%.6f")
+    beta_V_iec  = st.number_input("IEC‑like β_V [V/°C]", value=-0.08, format="%.3f")
+    lnG_fac     = st.number_input("IEC‑like ln(G) voltage factor", value=0.7, format="%.2f")
 
 run = st.sidebar.button("Run Translation", type="primary")
 
@@ -640,32 +673,46 @@ if run:
         tr_df = base["translated"]
         neu_df = base["neutralized"]
 
+    # 4b) Optional IEC‑like overlay
+    iec_df = None
+    if show_iec:
+        iec_df = iec_like_translate(anchor_df, target_G, target_T,
+                                    alpha_I=alpha_I_iec, beta_V=beta_V_iec, lnG_fac=lnG_fac)
+
     st.success("Translation complete." + (" (MO refined)" if using_mo else (" (CUSP‑T)" if using_cuspt else "")))
-    fig = plot_results(anchor_df, tr_df, neu_df, title=f"Translation to (G={target_G:.0f} W/m², T={target_T:.1f} °C)")
+    fig = plot_results(anchor_df, tr_df, neu_df,
+                       title=f"Translation to (G={target_G:.0f} W/m², T={target_T:.1f} °C)",
+                       iec_df=iec_df)
     st.pyplot(fig)
 
     # KPIs (cards)
-    c1, c2, c3 = st.columns(3)
-    k_meas = kpi(anchor_df)
-    k_tr   = kpi(tr_df)
-    k_neu  = kpi(neu_df)
+    if iec_df is None:
+        c1, c2, c3 = st.columns(3)
+    else:
+        c1, c2, c3, c4 = st.columns(4)
 
+    k_meas = kpi(anchor_df)
     with c1:
         st.subheader("Measured (anchor)")
         st.metric("Pmax [W]", f"{k_meas['Pmax']:.2f}")
-        st.caption(f"Vmp: {k_meas['Vmp']:.2f} V  |  Imp: {k_meas['Imp']:.2f} A")
 
+    k_tr = kpi(tr_df)
     with c2:
         tag = " · MO" if using_mo else (" · CUSP‑T" if using_cuspt else "")
         st.subheader(f"Translated (as‑is{tag})")
         st.metric("Pmax [W]", f"{k_tr['Pmax']:.2f}")
-        st.caption(f"Vmp: {k_tr['Vmp']:.2f} V  |  Imp: {k_tr['Imp']:.2f} A")
 
+    k_neu = kpi(neu_df)
     with c3:
         tag = " · MO" if using_mo else (" · CUSP‑T" if using_cuspt else "")
         st.subheader(f"Neutralized{tag}")
         st.metric("Pmax [W]", f"{k_neu['Pmax']:.2f}")
-        st.caption(f"Vmp: {k_neu['Vmp']:.2f} V  |  Imp: {k_neu['Imp']:.2f} A")
+
+    if iec_df is not None:
+        k_iec = kpi(iec_df)
+        with c4:
+            st.subheader("IEC‑like (surrogate)")
+            st.metric("Pmax [W]", f"{k_iec['Pmax']:.2f}")
 
     # Diagnostics JSON
     st.divider()
@@ -688,9 +735,11 @@ if run:
         st.download_button(label=label, data=csv, file_name=fname, mime="text/csv")
 
     st.subheader("Download corrected data")
-    colA, colB = st.columns(2)
-    with colA: csv_button("Translated (as‑is) CSV", tr_df, "translated_as_is.csv")
-    with colB: csv_button("Neutralized CSV", neu_df, "translated_neutralized.csv")
+    cols = st.columns(3 if iec_df is None else 4)
+    with cols[0]: csv_button("Translated (as‑is) CSV", tr_df, "translated_as_is.csv")
+    with cols[1]: csv_button("Neutralized CSV", neu_df, "translated_neutralized.csv")
+    if iec_df is not None:
+        with cols[2]: csv_button("IEC‑like (surrogate) CSV", iec_df, "iec_surrogate.csv")
 
     # Bundle everything
     buf = io.BytesIO()
@@ -698,6 +747,8 @@ if run:
         z.writestr("anchor_measured.csv", anchor_df.to_csv(index=False))
         z.writestr("translated_as_is.csv", tr_df.to_csv(index=False))
         z.writestr("translated_neutralized.csv", neu_df.to_csv(index=False))
+        if iec_df is not None:
+            z.writestr("iec_surrogate.csv", iec_df.to_csv(index=False))
         params = {
             "kinks_detected": base["kinks_detected"],
             "Rs_estimate": base["Rs_estimate"],
@@ -726,6 +777,9 @@ with st.expander("CSV schemas and tips"):
 
 **Suns‑Voc CSV (optional):** `G, T, Voc`  
 - If missing, MO synthesizes a small grid; CUSP‑T uses a mild ln(G) fallback but real Suns‑Voc improves \(V_{oc}\) accuracy.
+
+**IEC‑like overlay:**  
+- Quick **surrogate** for side‑by‑side visuals (not a formal IEC 60891 CP). Use your accredited CP outputs for audits.
   
 **Outputs:**  
 - **Translated (as‑is):** keeps bypass, non‑ohmic shunt, and degradation state.  
