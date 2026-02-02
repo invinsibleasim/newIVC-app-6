@@ -785,3 +785,11 @@ with st.expander("CSV schemas and tips"):
 - **Translated (as‑is):** keeps bypass, non‑ohmic shunt, and degradation state.  
 - **Neutralized:** bypass=off, inactive area=0, and shunt suppressed to a high‑Rsh limit (for “what‑if”).
 """)
+
+# NEW: IEC‑like overlay controls (toggle + stats toggle)
+with st.sidebar.expander("Optional: IEC‑like surrogate overlay"):
+    enable_iec = st.checkbox("Enable IEC‑like overlay (surrogate)", value=False)
+    alpha_I_iec = st.number_input("IEC‑like α_I [1/°C]", value=0.0005, format="%.6f")
+    beta_V_iec  = st.number_input("IEC‑like β_V [V/°C]", value=-0.08, format="%.3f")
+    lnG_fac     = st.number_input("IEC‑like ln(G) voltage factor", value=0.7, format="%.2f")
+    show_iec_stats = st.checkbox("Show IEC vs selected mode statistics", value=True, disabled=not enable_iec)
